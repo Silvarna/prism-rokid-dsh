@@ -5,6 +5,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const os = require('node:os');
 const { resolveDshHome } = require('./dsh-home');
+const { resolveDshAppPath, hostCli } = require('./dsh-app');
 const execFileAsync = promisify(execFile);
 const { randomUUID } = require('node:crypto');
 const readline = require('node:readline');
@@ -17,8 +18,8 @@ function modelOptionId(provider, model) {
 function command() {
   if (process.env.PRISM_DSH_COMMAND) return { exe: process.env.PRISM_DSH_COMMAND, args: ['--profile', 'acp'], env: { DSH_HOME:resolveDshHome() } };
   if (process.platform === 'win32') {
-    const exe = process.env.PRISM_DSH_APP_PATH || 'H:\\Program Files\\DeepSeek Harness\\DeepSeek Harness.exe';
-    return { exe, args: ['--expose-internals', path.join(path.dirname(exe), 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js'), '--profile', 'acp'], env: { ELECTRON_RUN_AS_NODE: '1', DSH_HOME:resolveDshHome() } };
+    const exe = resolveDshAppPath();
+    return { exe, args: ['--expose-internals', hostCli(exe), '--profile', 'acp'], env: { ELECTRON_RUN_AS_NODE: '1', DSH_HOME:resolveDshHome() } };
   }
   return { exe: 'dsh', args: ['--profile', 'acp'], env: { DSH_HOME:resolveDshHome() } };
 }
@@ -36,7 +37,7 @@ class Acp {
     readline.createInterface({ input: this.child.stdout }).on('line', line => this.receive(line));
     this.child.on('error', e => this.fail(e));
     this.child.on('exit', (code) => this.fail(new Error(`DSH ACP exited (${code})`)));
-    await this.call('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'prism-dsh', version: '0.2.7' } });
+    await this.call('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'prism-dsh', version: '0.2.8' } });
   }
   fail(err) { for (const p of this.pending.values()) p.reject(err); this.pending.clear(); this.ready = null; this.onEvent(null, { type: 'error', error: err.message }); }
   receive(line) {
