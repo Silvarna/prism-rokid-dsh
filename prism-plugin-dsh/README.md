@@ -1,6 +1,6 @@
 # DeepSeek Harness Prism adapter
 
-PluginBridge v4 adapter for DeepSeek Harness (DSH). Version 0.2.8 reads persisted DSH sessions and model selections, sends to an already open desktop session through a small DSH-side companion, forwards live text chunks into Prism history turns, exposes DSH's model catalog and model switching, and accepts remote selection of known DSH conversations. It falls back to DSH ACP for new or inactive sessions.
+PluginBridge v4 adapter for DeepSeek Harness (DSH). Version 0.3.0 reads persisted DSH sessions and model selections, sends to an already open desktop session through a small DSH-side companion, forwards live text chunks into Prism history turns, exposes DSH's model catalog and model switching, and accepts remote selection of known DSH conversations. It falls back to DSH ACP for new or inactive sessions.
 
 ## Local setup
 
@@ -17,3 +17,10 @@ ACP alone cannot resume a session whose writer is held by the DSH desktop proces
 ## Verification
 
 Run `node --test test/*.test.js` with Node 22. The companion has its own tests and an isolated installed-DSH smoke test. The latter launches the installed DSH ACP profile with a temporary home and verifies that the companion loads and answers an authenticated health check; it does not send a model prompt.
+
+## 0.3.0
+
+- **Pick the DSH folder**: `node scripts/pick-dsh-home.js` opens a folder picker (Windows/macOS) and saves `dsh_home`; pass a path as argument instead, or `--show` to see what is used. The folder may be `.dsh` itself or its parent. `DSH_HOME` saved in the user environment (Windows registry / `launchctl setenv`) is read even when Prism Hub started before it was set. An invalid source falls through to the next one instead of failing.
+- **Connection**: history and the session list decode Zstandard in-process (Node 22.15+), no DSH process per read; decoded threads are cached by file mtime/size. ACP is only started when the companion is not reachable, with a 10 s initialize timeout and its stderr in the error. The plugin stays Available (read-only) when a DSH folder exists. macOS app path supported.
+- **Thread**: rows get strictly increasing times in file order (no 1970 rows, no reply-before-question ties); consecutive assistant rows of one turn are merged into one reply; desktop user kinds accepted (override with `PRISM_DSH_USER_KINDS`).
+- **Diagnostics**: `~/.prism-dsh/plugin.log`; `node scripts/diagnose.js [session-id]` writes `~/.prism-dsh/diagnose.txt`.

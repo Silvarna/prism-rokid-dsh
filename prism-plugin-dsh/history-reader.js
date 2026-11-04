@@ -48,14 +48,36 @@ function project(text, expected) {
       surface.splice(start, end - start + 1, row);
     }
   }
-  return surface.flatMap(row => {
+  // Human-typed user messages: DSH marks them source.kind 'user' / 'user-rpc'
+  // (desktop builds may say 'desktop', 'ui' ...). Override with PRISM_DSH_USER_KINDS=a,b,c.
+  const KINDS = new Set((process.env.PRISM_DSH_USER_KINDS || 'user,user-rpc,desktop,ui,user-ui,human,input,prism').split(',').map(x => x.trim()).filter(Boolean));
+  const out = [];
+  let last = 0;
+  for (const row of surface) {
     const msg = row.type === 'user/message' ? row.data : row.type === 'assistant/message' ? row.data?.message : null;
-    if (!msg || (msg.role === 'user' && !['user', 'user-rpc'].includes(msg.source?.kind)) || !['user', 'assistant'].includes(msg.role)) return [];
+    if (!msg || !['user', 'assistant'].includes(msg.role)) continue;
+    if (msg.role === 'user' && msg.source?.kind && !KINDS.has(String(msg.source.kind))) continue;
+    if (msg.role === 'user' && msg.synthetic) continue;
     const content = (msg.content || []).filter(x => x.type === 'text' && typeof x.text === 'string').map(x => x.text).join('');
-    if (!content) return [];
-    const time = Number.isFinite(row.time) ? new Date(row.time).toISOString() : new Date(0).toISOString();
-    return [{ ID: String(msg.id || row.seq), Role:msg.role, Type:'message', Content:content, Status:'completed', CreatedAt:time, UpdatedAt:time }];
-  });
+    if (!content.trim()) continue;
+    // Prism orders by created_at, then id. Missing or repeated times would put rows
+    // in the wrong place (epoch 1970 at the top, assistant before user), so force a
+    // strictly increasing clock in file order.
+    let t = Number.isFinite(row.time) ? row.time : (Number.isFinite(msg.createdAt) ? msg.createdAt : Date.parse(msg.createdAt || row.createdAt || '') || 0);
+    if (!t || t <= last) t = last ? last + 1 : Date.now();
+    last = t;
+    const time = new Date(t).toISOString();
+    const prev = out[out.length - 1];
+    // One assistant turn is often split into several assistant/message rows
+    // (text, tool call, more text). Show it as one reply.
+    if (prev && prev.Role === 'assistant' && msg.role === 'assistant') {
+      prev.Content += '\n\n' + content;
+      prev.UpdatedAt = time;
+      continue;
+    }
+    out.push({ ID:String(msg.id || row.seq), Role:msg.role, Type:'message', Content:content, Status:'completed', CreatedAt:time, UpdatedAt:time });
+  }
+  return out;
 }
 function list(root) {
   const sessions = path.join(root, 'sessions');
@@ -86,4 +108,4 @@ function list(root) {
   return out.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 if (require.main === module) { try { process.stdout.write(JSON.stringify(process.argv[2] === '--list' ? list(process.argv[3]) : project(decode(process.argv[2]), process.argv[3]))); } catch (e) { console.error(e.message); process.exitCode = 1; } }
-module.exports = { frames, decode, project };
+module.exports = { frames, decode, project, list, canDecodeInProcess: () => typeof zlib.zstdDecompressSync === 'function' };

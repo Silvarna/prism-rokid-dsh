@@ -4,6 +4,10 @@ const path = require('node:path');
 const { resolveDshHome } = require('./dsh-home');
 
 function hostCli(exe) {
+  if (exe.includes('.app/Contents/MacOS/')) {
+    return path.join(exe.slice(0, exe.indexOf('.app/Contents/MacOS/') + 4), 'Contents', 'Resources', 'app.asar', 'dsh',
+      'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js');
+  }
   return path.join(path.dirname(exe), 'resources', 'app.asar', 'dsh', 'node_modules',
     '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js');
 }
@@ -15,6 +19,13 @@ function resolveDshAppPath() {
       throw new Error(`Invalid PRISM_DSH_APP_PATH: ${configured}`);
     }
     return configured;
+  }
+  if (process.platform === 'darwin') {
+    for (const dir of ['/Applications', path.join(require('node:os').homedir(), 'Applications')]) {
+      const exe = path.join(dir, 'DeepSeek Harness.app', 'Contents', 'MacOS', 'DeepSeek Harness');
+      if (fs.existsSync(exe)) return exe;
+    }
+    throw new Error('DeepSeek Harness.app not found in /Applications; set PRISM_DSH_APP_PATH');
   }
   const roots = [];
   if (process.platform === 'win32') {

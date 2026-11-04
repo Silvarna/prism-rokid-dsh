@@ -2,7 +2,7 @@ id: dsh
 schema_version: 1
 display_name: DeepSeek Harness
 description: Experimental ACP bridge for DeepSeek Harness sessions.
-version: 0.2.8
+version: 0.3.0
 plugin_protocol_version: "4"
 min_hub_version: 0.1.0
 integration_mode: protocol-native

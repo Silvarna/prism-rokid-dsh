@@ -206,3 +206,48 @@ test('history exposes user and assistant text and excludes internal messages', (
   assert.deepEqual(project(lines,id).map(m => [m.Role,m.Content]), [['user','hello'],['assistant','hi']]);
   assert.throws(() => project(lines,'another'), /identity/);
 });
+
+test('history keeps order when times are missing or equal and merges split assistant rows', () => {
+  const id = '18a4b129-317e-42c9-b601-c5a5c8fd58a2';
+  const lines = [
+    {type:'session',version:4,id},
+    {type:'user/message',seq:1,time:5000,surfaceOp:'append',data:{id:'u1',role:'user',source:{kind:'user'},content:[{type:'text',text:'q1'}]}},
+    {type:'assistant/message',seq:2,time:5000,surfaceOp:'append',data:{message:{id:'a1',role:'assistant',content:[{type:'text',text:'part 1'}]}}},
+    {type:'assistant/message',seq:3,surfaceOp:'append',data:{message:{id:'a2',role:'assistant',content:[{type:'tool-call'},{type:'text',text:'part 2'}]}}},
+    {type:'user/message',seq:4,surfaceOp:'append',data:{id:'u2',role:'user',source:{kind:'user'},content:[{type:'text',text:'q2'}]}},
+  ].map(JSON.stringify).join('\n');
+  const rows = project(lines, id);
+  assert.deepEqual(rows.map(m => [m.Role, m.Content]), [['user','q1'],['assistant','part 1\n\npart 2'],['user','q2']]);
+  const times = rows.map(r => Date.parse(r.CreatedAt));
+  assert.ok(times[0] < times[1] && times[1] < times[2], 'strictly increasing');
+  assert.ok(times[0] > 0);
+});
+
+test('zstd history is read in-process and lists sessions without spawning DSH', async () => {
+  const zlib = require('node:zlib');
+  if (typeof zlib.zstdCompressSync !== 'function') return;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-dsh-zstd-'));
+  const id = `session-${require('node:crypto').randomUUID()}`;
+  const dir = path.join(home, 'sessions', 'ws1', id); fs.mkdirSync(dir, { recursive:true });
+  const lines = [
+    { type:'session', version:4, id, cwd:home, createdAt:1 },
+    { type:'user/message', seq:1, time:1000, surfaceOp:'append', data:{ id:'u', role:'user', source:{ kind:'user' }, content:[{ type:'text', text:'hi' }] } },
+    { type:'assistant/message', seq:2, time:2000, surfaceOp:'append', data:{ message:{ id:'a', role:'assistant', content:[{ type:'text', text:'yo' }] } } },
+  ].map(JSON.stringify).join('\n') + '\n';
+  fs.writeFileSync(path.join(dir, 'session.v4.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(lines)));
+  const old = { d:process.env.DSH_HOME, p:process.env.PRISM_DSH_HOME };
+  try {
+    delete process.env.PRISM_DSH_HOME; process.env.DSH_HOME = home;
+    const a = new Adapter();
+    const sessions = await a.listSessions();
+    assert.equal(sessions.length, 1); assert.equal(sessions[0].NativeSessionID, id);
+    const rows = await a.readHistory(sessions[0]);
+    assert.deepEqual(rows.map(r => r.Content), ['hi', 'yo']);
+    const p = await a.probe.call(Object.assign(a, { acp:{ start:async () => { throw Error('no acp'); }, close() {} } }));
+    assert.equal(p.Available, true); assert.equal(p.CanListSessions, true); assert.equal(p.CanForwardSync, false);
+  } finally {
+    if (old.d === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = old.d;
+    if (old.p !== undefined) process.env.PRISM_DSH_HOME = old.p;
+    fs.rmSync(home, { recursive:true, force:true });
+  }
+});

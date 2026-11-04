@@ -4,7 +4,18 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const os = require('node:os');
-const { resolveDshHome } = require('./dsh-home');
+const { resolveDshHome, resolveDshHomeInfo } = require('./dsh-home');
+const history = require('./history-reader');
+const LOG_DIR = path.join(require('node:os').homedir(), '.prism-dsh');
+function log(...parts) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive:true });
+    const file = path.join(LOG_DIR, 'plugin.log');
+    try { if (fs.statSync(file).size > 2 * 1024 * 1024) fs.renameSync(file, file + '.1'); } catch {}
+    fs.appendFileSync(file, `${new Date().toISOString()} ${parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' ')}\n`);
+  } catch {}
+}
+const VERSION = require('./package.json').version;
 const { resolveDshAppPath, hostCli } = require('./dsh-app');
 const execFileAsync = promisify(execFile);
 const { randomUUID } = require('node:crypto');
@@ -21,6 +32,12 @@ function command() {
     const exe = resolveDshAppPath();
     return { exe, args: ['--expose-internals', hostCli(exe), '--profile', 'acp'], env: { ELECTRON_RUN_AS_NODE: '1', DSH_HOME:resolveDshHome() } };
   }
+  if (process.platform === 'darwin') {
+    try {
+      const exe = resolveDshAppPath();
+      return { exe, args: ['--expose-internals', hostCli(exe), '--profile', 'acp'], env: { ELECTRON_RUN_AS_NODE: '1', DSH_HOME:resolveDshHome() } };
+    } catch {}
+  }
   return { exe: 'dsh', args: ['--profile', 'acp'], env: { DSH_HOME:resolveDshHome() } };
 }
 class Acp {
@@ -33,11 +50,15 @@ class Acp {
   async boot() {
     const c = command();
     this.child = spawn(c.exe, c.args, { env: { ...process.env, ...c.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.child.stderr.on('data', () => {});
+    this.stderrTail = '';
+    this.child.stderr.on('data', d => { this.stderrTail = (this.stderrTail + d).slice(-2000); });
     readline.createInterface({ input: this.child.stdout }).on('line', line => this.receive(line));
-    this.child.on('error', e => this.fail(e));
-    this.child.on('exit', (code) => this.fail(new Error(`DSH ACP exited (${code})`)));
-    await this.call('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'prism-dsh', version: '0.2.8' } });
+    this.child.on('error', e => { log('acp spawn error', c.exe, e.message); this.fail(e); });
+    this.child.on('exit', (code) => { log('acp exited', code, this.stderrTail.slice(-500)); this.fail(new Error(`DSH ACP exited (${code})${this.stderrTail ? ': ' + this.stderrTail.trim().split('\n').pop() : ''}`)); });
+    await Promise.race([
+      this.call('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'prism-dsh', version: VERSION } }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DSH ACP did not answer initialize within 10 s')), 10000).unref()),
+    ]).catch(error => { try { this.child.kill(); } catch {} throw error; });
   }
   fail(err) { for (const p of this.pending.values()) p.reject(err); this.pending.clear(); this.ready = null; this.onEvent(null, { type: 'error', error: err.message }); }
   receive(line) {
@@ -78,10 +99,17 @@ class Adapter {
     catch (error) { if (error.cause?.code === 'ECONNREFUSED') return null; throw error; }
   }
   async probe() {
+    const info = resolveDshHomeInfo();
     let ok = false, reason = '';
-    try { await this.acp.start(); ok = true; } catch (e) { reason = e.message; }
-    const companion = await this.companionRequest('/health').catch(() => null);
-    return { PluginID:'dsh', Available:ok || !!companion, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanListSessions:true, CanReadHistory:true, CanInterrupt:false, CanApproval:false, CanForwardSync:ok || !!companion, CanReverseSync:true, CanWaitRun:ok || !!companion, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
+    const companion = info.home ? await this.companionRequest('/health').catch(e => { log('companion health failed', e.message); return null; }) : null;
+    if (!info.home) reason = 'DSH data folder not found. Run scripts/pick-dsh-home.js in the plugin folder.';
+    else if (!companion) {
+      try { await this.acp.start(); ok = true; } catch (e) { reason = e.message; }
+    }
+    const readable = !!info.home;
+    const live = ok || !!companion;
+    log('probe', { version:VERSION, home:info.home, home_source:info.source, tried:info.tried, companion:!!companion, acp:ok, reason });
+    return { PluginID:'dsh', Available:readable, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanListSessions:readable, CanReadHistory:readable, CanInterrupt:false, CanApproval:false, CanForwardSync:live, CanReverseSync:true, CanWaitRun:live, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
   }
   async discover() { const p = await this.probe(); return { PluginID:'dsh', Surface:'dsh-acp', Endpoint:'', ProcessID:this.acp.child?.pid || 0, SessionHints:{}, Verified:p.Available, Detail:p.UnavailableReason }; }
   native(id, cwd, visible=false) { return { PluginID:'dsh', NativeSessionID:id, NativeThreadID:id, Surface:visible ? 'dsh-companion' : 'dsh-acp', Endpoint:'', Cwd:cwd, Visible:visible }; }
@@ -144,8 +172,21 @@ class Adapter {
     return { ok:true, action:req.action, thread_id:id, details, details_confirmed:true };
   }
   async runHistoryReader(args) {
-    const c = command(); const exe = process.platform === 'win32' && !process.env.PRISM_DSH_COMMAND ? c.exe : process.env.PRISM_DSH_NODE;
-    if (!exe) throw Error('Set PRISM_DSH_NODE to a Node 24+ executable for history');
+    if (history.canDecodeInProcess()) {
+      if (args[0] === '--list') return history.list(args[1]);
+      const [file, id] = args;
+      const st = await fs.promises.stat(file);
+      const key = `${file}|${st.mtimeMs}|${st.size}`;
+      this.historyCache ||= new Map();
+      const hit = this.historyCache.get(id);
+      if (hit?.key === key) return hit.rows;
+      const rows = history.project(history.decode(file), id);
+      this.historyCache.set(id, { key, rows });
+      if (this.historyCache.size > 50) this.historyCache.delete(this.historyCache.keys().next().value);
+      return rows;
+    }
+    const c = command(); const exe = (process.platform === 'win32' || process.platform === 'darwin') && !process.env.PRISM_DSH_COMMAND ? c.exe : process.env.PRISM_DSH_NODE;
+    if (!exe || exe === 'dsh') throw Error('This Node has no Zstandard; set PRISM_DSH_NODE to Node 22.15+ for history');
     const { stdout } = await execFileAsync(exe, [path.join(__dirname, 'history-reader.js'), ...args], { env:{...process.env, ...c.env}, windowsHide:true, maxBuffer:64*1024*1024, timeout:30000 });
     return JSON.parse(stdout);
   }
@@ -161,8 +202,11 @@ class Adapter {
         const f = path.join(base, name); try { if ((await fs.promises.stat(f)).isFile()) found.push(f); } catch (e) { if (e.code !== 'ENOENT') throw e; }
       }
     }
-    if (found.length !== 1) throw Error(found.length ? 'Multiple DSH history files found' : 'DSH v4 history not found');
-    return (await this.runHistoryReader([found[0], id])).slice(-Math.max(1, Math.min(Number(limit) || 100, 500)));
+    if (found.length !== 1) { log('readHistory: files found', id, found.length); throw Error(found.length ? 'Multiple DSH history files found' : 'DSH v4 history not found'); }
+    let rows;
+    try { rows = await this.runHistoryReader([found[0], id]); }
+    catch (error) { log('readHistory failed', found[0], error.message); throw error; }
+    return rows.slice(-Math.max(1, Math.min(Number(limit) || 100, 500)));
   }
   async *readHistoryStream(session, request = {}, signal) {
     const streamId = request.stream_id || randomUUID();
@@ -217,7 +261,9 @@ class Adapter {
   }
   async listSessions() {
     const root = resolveDshHome();
-    const rows = await this.runHistoryReader(['--list', root]);
+    let rows;
+    try { rows = await this.runHistoryReader(['--list', root]); }
+    catch (error) { log('listSessions failed', root, error.message); throw error; }
     return rows.map(s => ({ ...this.native(s.id, s.cwd), Title:s.title || s.id, PrismConversationID:'', Active:false, LastActivityAt:s.updatedAt, Metadata:{} }));
   }
   async *subscribePlugin(signal) {
@@ -291,7 +337,10 @@ class Adapter {
   async sendToCompanion(session, msg) {
     const id = session.NativeSessionID;
     const runId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.PrismMessageID || '') ? msg.PrismMessageID : randomUUID();
-    const accepted = await this.companionRequest('/send', { sessionId:id, messageId:runId, text:msg.Text });
+    let accepted;
+    try { accepted = await this.companionRequest('/send', { sessionId:id, messageId:runId, text:msg.Text }); }
+    catch (error) { log('companion send failed', id, error.message); throw error; }
+    log('sent via companion', id, runId);
     const run = { id:runId, mode:'companion', running:true, text:accepted.text || '', startedAt:accepted.startedAt || new Date().toISOString(), nativeMessageId:accepted.nativeMessageId, event:null };
     this.runs.set(id, run);
     run.promise = (async () => {
