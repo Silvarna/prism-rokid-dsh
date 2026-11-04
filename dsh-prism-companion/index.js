@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 export const name = 'prism-companion';
@@ -35,10 +36,22 @@ function authorized(req, token) {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
+// DSH data folder: DSH_HOME, else the folder written by the Prism installer
+// (dsh-home.txt next to this file), else ~/.dsh.
+export function dshHome() {
+  if (process.env.DSH_HOME) return process.env.DSH_HOME;
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const saved = fs.readFileSync(path.join(here, 'dsh-home.txt'), 'utf8').trim();
+    if (saved) return saved;
+  } catch {}
+  return path.join(os.homedir(), '.dsh');
+}
+
 export function createHandler(ctx, token) {
   const runs = new Map();
   async function storedSelection(sessionId) {
-    const root = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+    const root = dshHome();
     const file = path.join(root, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`);
     try {
       const cache = JSON.parse(await fs.promises.readFile(file, 'utf8'));
@@ -172,7 +185,7 @@ export function createHandler(ctx, token) {
 }
 
 export async function apply(ctx) {
-  const root = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  const root = dshHome();
   const descriptor = path.join(root, 'prism-companion.json');
   const token = randomBytes(32).toString('hex');
   const server = http.createServer((req, res) => {

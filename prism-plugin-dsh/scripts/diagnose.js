@@ -22,7 +22,7 @@ const say = (...a) => out.push(a.map(x => typeof x === 'string' ? x : JSON.strin
       const r = await fetch(`http://127.0.0.1:${d.port}/health`, { headers:{ authorization:`Bearer ${d.token}` }, signal:AbortSignal.timeout(3000) });
       say('companion', r.status, await r.text());
     } catch (e) { say('companion descriptor exists but not reachable:', e.cause?.code || e.message); }
-  } else say('companion: no prism-companion.json (companion not loaded in DSH desktop)');
+  } else say('companion: no prism-companion.json (companion not loaded in DSH desktop; run node scripts/install-companion.js, then restart DSH)');
   const { Adapter } = require('../index');
   const a = new Adapter();
   const p = await a.probe(); say('probe', p); a.close();

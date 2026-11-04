@@ -1,0 +1,9 @@
+{
+  "name": "dsh-prism-companion",
+  "version": "0.1.6",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "desktop-patch.mjs"],
+  "engines": { "dsh": ">=0.2.1-rc.5 <0.3.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}
