@@ -1,0 +1,30 @@
+id: dsh
+schema_version: 1
+display_name: DeepSeek Harness
+description: Experimental ACP bridge for DeepSeek Harness sessions.
+version: 0.2.7
+plugin_protocol_version: "4"
+min_hub_version: 0.1.0
+integration_mode: protocol-native
+transport: process
+runtime_modes: [native]
+default_runtime_mode: native
+runtime_controls:
+  native:
+    model: stable
+runtime_dependencies:
+  node: ">=22.0.0 <23.0.0"
+command: ["${runtime.node}", "index.js"]
+capabilities:
+  native_visible_input: true
+  native_visible_output: true
+  can_attach_session: true
+  can_start_session_with_message: true
+  can_list_sessions: true
+  can_read_history: true
+  can_interrupt: false
+  can_approval: false
+  can_forward_sync: true
+  can_reverse_sync: true
+  can_wait_run: true
+  can_control_session: true
