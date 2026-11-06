@@ -26,5 +26,6 @@ capabilities:
   can_approval: false
   can_forward_sync: true
   can_reverse_sync: true
+  can_plugin_wide_watch: true
   can_wait_run: true
   can_control_session: true

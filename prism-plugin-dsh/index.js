@@ -109,7 +109,7 @@ class Adapter {
     const readable = !!info.home;
     const live = ok || !!companion;
     log('probe', { version:VERSION, home:info.home, home_source:info.source, tried:info.tried, companion:!!companion, acp:ok, reason });
-    return { PluginID:'dsh', Available:readable, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanListSessions:readable, CanReadHistory:readable, CanInterrupt:false, CanApproval:false, CanForwardSync:live, CanReverseSync:true, CanWaitRun:live, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
+    return { PluginID:'dsh', Available:readable, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanListSessions:readable, CanReadHistory:readable, CanInterrupt:false, CanApproval:false, CanForwardSync:live, CanReverseSync:true, CanPluginWideWatch:true, CanWaitRun:live, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
   }
   async discover() { const p = await this.probe(); return { PluginID:'dsh', Surface:'dsh-acp', Endpoint:'', ProcessID:this.acp.child?.pid || 0, SessionHints:{}, Verified:p.Available, Detail:p.UnavailableReason }; }
   native(id, cwd, visible=false) { return { PluginID:'dsh', NativeSessionID:id, NativeThreadID:id, Surface:visible ? 'dsh-companion' : 'dsh-acp', Endpoint:'', Cwd:cwd, Visible:visible }; }
@@ -280,7 +280,7 @@ class Adapter {
         yield this.makeEvent('desktop.session.index.changed', 'idle', row.Title, {
           native_session:{ plugin_id:'dsh', native_session_id:row.NativeSessionID,
             native_thread_id:row.NativeThreadID, surface:row.Surface,
-            cwd:row.Cwd, visible:true }, title:row.Title,
+            cwd:row.Cwd, visible:false }, title:row.Title,
           session_hint:{ plugin_id:'dsh', native_session_id:row.NativeSessionID,
             native_thread_id:row.NativeThreadID, prism_conversation_id:'',
             surface:row.Surface, endpoint:row.Endpoint, cwd:row.Cwd,

@@ -7,6 +7,36 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+test('directory updates stay plugin-wide and never enter a session stream', async () => {
+  const a = new Adapter();
+  const old = a.native('session-old', process.cwd());
+  const added = a.native('session-added', process.cwd());
+  a.listSessions = async () => [{ ...added, Title:'New thread', LastActivityAt:'2026-11-06T00:00:00Z' }];
+  const controller = new AbortController();
+  const session = a.subscribe(old, controller.signal);
+  const pending = session.next();
+  try {
+    const directory = a.subscribePlugin(controller.signal);
+    const event = (await directory.next()).value;
+    assert.equal(event.Type, 'desktop.session.index.changed');
+    assert.equal(event.Payload.native_session.native_session_id, added.NativeSessionID);
+    assert.equal(event.Payload.native_session.visible, false);
+    assert.equal((await directory.next()).value.Type, 'desktop.session.directory.reconciled');
+    await directory.return();
+    a.publish(added.NativeSessionID, a.makeEvent('progress', 'running', 'other thread'));
+    a.publish(old.NativeSessionID, a.makeEvent('progress', 'running', 'own reply'));
+    const result = await pending;
+    assert.equal(result.value.Type, 'progress');
+    assert.equal(result.value.Summary, 'own reply');
+    controller.abort();
+    assert.equal((await session.next()).done, true);
+  } finally {
+    controller.abort();
+    await session.return();
+    a.close();
+  }
+});
+
 test('detail returns the SDK model option and native identity', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-dsh-detail-'));
   const id = 'session-18a4b129-317e-42c9-b601-c5a5c8fd58a2';
