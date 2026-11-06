@@ -109,10 +109,10 @@ class Adapter {
     const readable = !!info.home;
     const live = ok || !!companion;
     log('probe', { version:VERSION, home:info.home, home_source:info.source, tried:info.tried, companion:!!companion, acp:ok, reason });
-    return { PluginID:'dsh', Available:readable, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanListSessions:readable, CanReadHistory:readable, CanInterrupt:false, CanApproval:false, CanForwardSync:live, CanReverseSync:true, CanPluginWideWatch:true, CanWaitRun:live, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
+    return { PluginID:'dsh', Available:readable, NativeVisibleInput:!!companion, NativeVisibleOutput:!!companion, CanAttachSession:true, CanStartSessionWithMessage:true, CanOpenDraft:true, CanListSessions:readable, CanReadHistory:readable, CanInterrupt:false, CanApproval:false, CanForwardSync:live, CanReverseSync:true, CanPluginWideWatch:true, CanWaitRun:live, CanReadStatus:false, CanControlSession:!!companion, IntegrationMode:'protocol-native', VisibilitySurface:companion ? 'dsh-companion' : 'dsh-acp', UnavailableReason:reason };
   }
   async discover() { const p = await this.probe(); return { PluginID:'dsh', Surface:'dsh-acp', Endpoint:'', ProcessID:this.acp.child?.pid || 0, SessionHints:{}, Verified:p.Available, Detail:p.UnavailableReason }; }
-  native(id, cwd, visible=false) { return { PluginID:'dsh', NativeSessionID:id, NativeThreadID:id, Surface:visible ? 'dsh-companion' : 'dsh-acp', Endpoint:'', Cwd:cwd, Visible:visible }; }
+  native(id, cwd, visible=false) { return { PluginID:'dsh', NativeSessionID:id, NativeThreadID:id, Surface:visible ? 'dsh-companion' : 'dsh-acp', Endpoint:'', Cwd:String(cwd || '').replace(/\\/g, '/'), Visible:visible }; }
   async readDetail(session) {
     const id = session.NativeSessionID;
     if (!/^(?:session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw Error('Invalid DSH session id');
@@ -316,8 +316,35 @@ class Adapter {
     const entry = this.sessions.get(id);
     return this.native(id, entry.cwd, entry.mode === 'companion');
   }
+  async openDraft(req) {
+    if (!req.DraftID || !path.isAbsolute(req.Cwd || '')) throw new Error('A draft ID and absolute working directory are required');
+    this.drafts ||= new Map();
+    const existing = this.drafts.get(req.DraftID);
+    if (existing && path.resolve(existing.Cwd) !== path.resolve(req.Cwd)) throw new Error('Draft already belongs to another project');
+    const draft = existing || { DraftID:req.DraftID, Cwd:req.Cwd, DraftFingerprint:randomUUID() };
+    this.drafts.set(req.DraftID, draft);
+    while (this.drafts.size > 100) this.drafts.delete(this.drafts.keys().next().value);
+    return { ...draft, Controls:{ actions:[] } };
+  }
+  async controlDraft(req) {
+    const draft = this.drafts?.get(req.DraftID);
+    if (!draft) throw new Error('Draft expired or does not exist');
+    if (req.Action || req.action) throw new Error('Draft controls are not supported');
+    return { DraftID:draft.DraftID, Cwd:draft.Cwd, Controls:{ actions:[] } };
+  }
+  async startDraftWithMessage(req) {
+    const draft = this.drafts?.get(req.DraftID);
+    if (!draft) throw new Error('Draft expired or does not exist');
+    if (draft.started) throw new Error('Draft was already submitted; do not resend');
+    if (!req.Message?.Text?.trim() || req.Message.Attachments?.length) throw new Error('Only non-empty text is supported');
+    draft.started = true;
+    // Keep uncertain submissions blocked so a retry cannot create a second session.
+    return this.startSessionWithMessage({ ...req, Cwd:draft.Cwd });
+  }
   async startSessionWithMessage(req) {
-    await this.acp.start(); if (!path.isAbsolute(req.Cwd)) throw new Error('DSH requires an absolute working directory');
+    if (!path.isAbsolute(req.Cwd || '')) throw new Error('DSH requires an absolute working directory');
+    if (!req.Message?.Text?.trim() || req.Message.Attachments?.length) throw new Error('Only non-empty text is supported');
+    await this.acp.start();
     const result = await this.acp.call('session/new', { cwd:req.Cwd, mcpServers:[] }); this.sessions.set(result.sessionId, { mode:'acp', cwd:req.Cwd });
     const session = this.native(result.sessionId, req.Cwd); const receipt = await this.send(session, req.Message);
     return { Session:session, Receipt:receipt, Visibility:this.verifyVisibility(session, req.Message.Text) };

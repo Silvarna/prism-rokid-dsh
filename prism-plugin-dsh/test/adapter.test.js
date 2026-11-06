@@ -281,3 +281,29 @@ test('zstd history is read in-process and lists sessions without spawning DSH', 
     fs.rmSync(home, { recursive:true, force:true });
   }
 });
+
+test('Windows drive and UNC project paths use portable separators without losing identity', () => {
+  const a = new Adapter();
+  assert.equal(a.native('one', 'D:\\RayWorkspace\\.dsh\\aik_auto_memory_use').Cwd, 'D:/RayWorkspace/.dsh/aik_auto_memory_use');
+  assert.equal(a.native('two', '\\\\NAS\\share\\Work\\project').Cwd, '//NAS/share/Work/project');
+  assert.equal(path.win32.resolve(a.native('two', '\\\\NAS\\share\\Work\\project').Cwd), path.win32.resolve('\\\\NAS\\share\\Work\\project'));
+  assert.equal(a.native('three', '/Users/ray/project').Cwd, '/Users/ray/project');
+  a.close();
+});
+
+test('project draft creates nothing until send and uses its original project exactly once', async () => {
+  const a = new Adapter();
+  const cwd = path.resolve('project-one');
+  let starts = 0;
+  a.startSessionWithMessage = async req => { starts++; assert.equal(req.Cwd, cwd); return { Session:{ Cwd:req.Cwd } }; };
+  const draft = await a.openDraft({ DraftID:'draft-one', Cwd:cwd });
+  assert.equal(starts, 0);
+  assert.equal((await a.openDraft({ DraftID:'draft-one', Cwd:cwd })).DraftFingerprint, draft.DraftFingerprint);
+  await assert.rejects(a.openDraft({ DraftID:'draft-one', Cwd:path.resolve('other-project') }), /another project/);
+  await assert.rejects(a.startDraftWithMessage({ DraftID:'draft-one', Message:{ Text:' ' } }), /non-empty/);
+  await a.startDraftWithMessage({ DraftID:'draft-one', Cwd:path.resolve('wrong-project'), Message:{ Text:'hello' } });
+  await assert.rejects(a.startDraftWithMessage({ DraftID:'draft-one', Message:{ Text:'hello' } }), /already submitted/);
+  await assert.rejects(a.startDraftWithMessage({ DraftID:'unknown', Message:{ Text:'hello' } }), /expired/);
+  assert.equal(starts, 1);
+  a.close();
+});
